@@ -15,9 +15,11 @@
  */
 package io.github.agebhar1;
 
+import io.github.agebhar1.CachingMultiGauge.Row;
 import io.micrometer.core.instrument.MockClock;
-import io.micrometer.core.instrument.MultiGauge;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
+import io.micrometer.core.instrument.simple.SimpleConfig;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
@@ -25,7 +27,6 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static java.util.Arrays.asList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class CachingMultiGaugeTests {
@@ -36,56 +37,56 @@ public class CachingMultiGaugeTests {
     public void shouldUpdateValuesAfterTTLExpired() {
 
         final AtomicInteger invocationCounter = new AtomicInteger(0);
-
-        final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-
         final MockClock mockClock = new MockClock();
 
-        final MultiGauge gauge = MultiGauge.builder("row").register(registry);
-        gauge.register(
-                CachingMultiGauge
-                        .ttl(Duration.ofSeconds(2), mockClock)
-                        .update(cache -> {
+        final SimpleMeterRegistry registry = new SimpleMeterRegistry(SimpleConfig.DEFAULT, mockClock);
 
-                            double value = invocationCounter.incrementAndGet();
+        CachingMultiGauge
+                .builder("row")
+                .ttl(Duration.ofSeconds(2))
+                .update(cache -> {
 
-                            cache.update(Tags.of("column0", "a").and("column1", "a"), value);
-                            cache.update(Tags.of("column0", "a").and("column1", "b"), value);
-                            cache.update(Tags.of("column0", "b").and("column1", "b"), value);
-                            cache.update(Tags.of("column0", "b").and("column1", "a"), value);
+                    double value = invocationCounter.incrementAndGet();
 
-                        })
-                        .rows(asList(
-                                Tags.of("column0", "a").and("column1", "a"),
-                                Tags.of("column0", "a").and("column1", "b"),
-                                Tags.of("column0", "b").and("column1", "b"),
-                                Tags.of("column0", "b").and("column1", "a"))
-                        ));
+                    cache.update(Tags.of("column0", "a").and("column1", "a"), value);
+                    cache.update(Tags.of("column0", "a").and("column1", "b"), value);
+                    cache.update(Tags.of("column0", "b").and("column1", "b"), value);
+                    cache.update(Tags.of("column0", "b").and("column1", "a"), value);
+
+                })
+                .tag("key", "value")
+                .register(registry)
+                .register(
+                        Row.of(Tag.of("column0", "a"), Tag.of("column1", "a")),
+                        Row.of(Tag.of("column0", "a"), Tag.of("column1", "b")),
+                        Row.of(Tag.of("column0", "b"), Tag.of("column1", "b")),
+                        Row.of(Tag.of("column0", "b"), Tag.of("column1", "a"))
+                );
 
         assertThat(invocationCounter).hasValue(0);
 
-        assertThat(registry.get("row").tag("column0", "a").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
-        assertThat(registry.get("row").tag("column0", "a").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
-        assertThat(registry.get("row").tag("column0", "b").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
-        assertThat(registry.get("row").tag("column0", "b").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "a").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "a").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "b").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "b").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
 
         assertThat(invocationCounter).hasValue(1);
 
         mockClock.addSeconds(2);
 
-        assertThat(registry.get("row").tag("column0", "a").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
-        assertThat(registry.get("row").tag("column0", "a").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
-        assertThat(registry.get("row").tag("column0", "b").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
-        assertThat(registry.get("row").tag("column0", "b").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "a").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "a").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "b").tag("column1", "b").gauge().value()).isCloseTo(1, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "b").tag("column1", "a").gauge().value()).isCloseTo(1, epsilon);
 
         assertThat(invocationCounter).hasValue(1);
 
         mockClock.addSeconds(1);
 
-        assertThat(registry.get("row").tag("column0", "a").tag("column1", "a").gauge().value()).isCloseTo(2, epsilon);
-        assertThat(registry.get("row").tag("column0", "a").tag("column1", "b").gauge().value()).isCloseTo(2, epsilon);
-        assertThat(registry.get("row").tag("column0", "b").tag("column1", "b").gauge().value()).isCloseTo(2, epsilon);
-        assertThat(registry.get("row").tag("column0", "b").tag("column1", "a").gauge().value()).isCloseTo(2, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "a").tag("column1", "a").gauge().value()).isCloseTo(2, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "a").tag("column1", "b").gauge().value()).isCloseTo(2, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "b").tag("column1", "b").gauge().value()).isCloseTo(2, epsilon);
+        assertThat(registry.get("row").tag("key", "value").tag("column0", "b").tag("column1", "a").gauge().value()).isCloseTo(2, epsilon);
 
         assertThat(invocationCounter).hasValue(2);
 

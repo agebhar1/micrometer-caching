@@ -16,10 +16,14 @@
 package io.github.agebhar1;
 
 import io.micrometer.core.instrument.Clock;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.MultiGauge;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
+import io.micrometer.core.lang.Nullable;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Consumer;
@@ -38,11 +42,11 @@ public class CachingMultiGauge {
 
     }
 
-    private static class CacheOperationsImpl implements CacheOperations {
+    private static class Cache implements CacheOperations {
 
         private final Map<String, Double> values;
 
-        CacheOperationsImpl(Map<String, Double> values) {
+        Cache(Map<String, Double> values) {
             this.values = values;
         }
 
@@ -57,19 +61,29 @@ public class CachingMultiGauge {
         }
     }
 
+    private final MultiGauge gauge;
+
     private final Map<String, Double> values = new TreeMap<>();
 
     private final Consumer<CacheOperations> consumer;
 
-    private final Clock clock;
-
     private final long ttlNanos;
+
+    private final Clock clock;
 
     private long lastUpdateNanos;
 
-    private CachingMultiGauge(long ttlNanos, Clock clock, Consumer<CacheOperations> consumer) {
-        this.ttlNanos = ttlNanos;
-        this.clock = clock;
+    private CachingMultiGauge(MeterRegistry registry, String name, Tags tags, String baseUnit, String description, Duration ttl, Consumer<CacheOperations> consumer) {
+
+        this.gauge = MultiGauge
+                .builder(name)
+                .tags(tags)
+                .baseUnit(baseUnit)
+                .description(description)
+                .register(registry);
+
+        this.clock = registry.config().clock();
+        this.ttlNanos = ttl.toNanos();
         this.consumer = consumer;
         this.lastUpdateNanos = clock.monotonicTime() - ttlNanos - 1;
     }
@@ -79,7 +93,7 @@ public class CachingMultiGauge {
             final long timestampNanos = clock.monotonicTime();
             if (isTTLExpired(timestampNanos, lastUpdateNanos)) {
                 lastUpdateNanos = timestampNanos;
-                consumer.accept(new CacheOperationsImpl(values));
+                consumer.accept(new Cache(values));
             }
             return values.getOrDefault(key, 0.0);
         }
@@ -93,36 +107,128 @@ public class CachingMultiGauge {
         return tags.toString();
     }
 
-    public Iterable<MultiGauge.Row<?>> rows(Iterable<Tags> uniqueRowTags) {
-        return StreamSupport.stream(uniqueRowTags.spliterator(), false)
-                .map(tags -> {
+    public void register(Row... rows) {
+        register(Arrays.asList(rows));
+    }
 
-                    final String key = keyOf(tags);
-                    final ToDoubleFunction<CachingMultiGauge> f = it -> it.getValue(key);
+    public void register(Iterable<Row> rows) {
+        gauge.register(StreamSupport.stream(rows.spliterator(), false)
+                .map(row -> {
 
-                    return MultiGauge.Row.of(tags, this, f);
+                    final String key = keyOf(row.uniqueTags);
+                    final ToDoubleFunction<CachingMultiGauge> fn = it -> it.getValue(key);
+
+                    return MultiGauge.Row.of(row.uniqueTags, this, fn);
                 })
-                .collect(toList());
+                .collect(toList()));
     }
 
-    public static class CachingMultiGaugeBuilder {
+    public static Builders.CacheTTL builder(String name) {
+        return new Builder(name);
+    }
 
-        private final Duration ttl;
-        private final Clock clock;
+    public static class Builder implements Builders, Builders.CacheTTL, Builders.CacheUpdate {
 
-        private CachingMultiGaugeBuilder(Duration ttl, Clock clock) {
-            this.ttl = ttl;
-            this.clock = clock;
+        private final String name;
+        private Tags tags = Tags.empty();
+
+        private String description;
+        private String baseUnit;
+
+        private Duration ttl;
+        private Consumer<CacheOperations> update;
+
+        public Builder(String name) {
+            this.name = name;
         }
 
-        public CachingMultiGauge update(Consumer<CacheOperations> consumer) {
-            return new CachingMultiGauge(ttl.toNanos(), clock, consumer);
+        @Override
+        public CacheUpdate ttl(Duration duration) {
+            this.ttl = duration;
+            return this;
         }
+
+        @Override
+        public Builders update(Consumer<CacheOperations> consumer) {
+            this.update = consumer;
+            return this;
+        }
+
+        @Override
+        public Builders tags(String... tags) {
+            return tags(Tags.of(tags));
+        }
+
+        @Override
+        public Builders tags(Iterable<Tag> tags) {
+            this.tags = this.tags.and(tags);
+            return this;
+        }
+
+        @Override
+        public Builders tag(String key, String value) {
+            this.tags = this.tags.and(key, value);
+            return this;
+        }
+
+        @Override
+        public Builders description(String description) {
+            this.description = description;
+            return this;
+        }
+
+        @Override
+        public Builders baseUnit(String unit) {
+            this.baseUnit = unit;
+            return this;
+        }
+
+        @Override
+        public CachingMultiGauge register(MeterRegistry registry) {
+            return new CachingMultiGauge(registry, name, tags, baseUnit, description, ttl, update);
+        }
+    }
+
+    public interface Builders {
+
+        interface CacheTTL {
+            CacheUpdate ttl(Duration duration);
+        }
+
+        interface CacheUpdate {
+            Builders update(Consumer<CacheOperations> consumer);
+        }
+
+        Builders tags(String... tags);
+
+        Builders tags(Iterable<Tag> tags);
+
+        Builders tag(String key, String value);
+
+        Builders description(@Nullable String description);
+
+        Builders baseUnit(@Nullable String unit);
+
+        CachingMultiGauge register(MeterRegistry registry);
 
     }
 
-    public static CachingMultiGaugeBuilder ttl(Duration duration, Clock clock) {
-        return new CachingMultiGaugeBuilder(duration, clock);
+    public static class Row {
+
+        private final Tags uniqueTags;
+
+        private Row(Tags uniqueTags) {
+            this.uniqueTags = uniqueTags;
+        }
+
+        public static Row of(Tags uniqueTags) {
+            return new Row(uniqueTags);
+        }
+
+        public static Row of(Tag... uniqueTags) {
+            return new Row(Tags.of(uniqueTags));
+        }
+
     }
 
 }
